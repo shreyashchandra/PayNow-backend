@@ -129,7 +129,7 @@ router.get("/bulk", async (req, res) => {
   try {
     const filter = req.query.filter || "";
     const page = parseInt(req.query.page, 10) || 1; // Default to page 1
-    const limit = parseInt(req.query.limit, 10) || 10; // Default to 10 items per page
+    const limit = parseInt(req.query.limit, 10) || 12; // Default to 10 items per page
 
     // Calculate the number of users to skip
     const skip = (page - 1) * limit;
