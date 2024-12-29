@@ -14,6 +14,11 @@ jobs:
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
+      # Checkout the code
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      # Deploy using SSH
       - name: Deploy using SSH
         uses: appleboy/ssh-action@master
         with:
@@ -22,7 +27,29 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
+            # Navigate to the project directory
             cd /home/shreyash/PayNow-backend
+
+            # Install Node.js if not already installed
+            if ! command -v node &> /dev/null; then
+              echo "Node.js not found. Installing..."
+              curl -sL https://deb.nodesource.com/setup_16.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+            else
+              echo "Node.js is already installed"
+            fi
+
+            # Install PM2 if not already installed
+            if ! command -v pm2 &> /dev/null; then
+              echo "PM2 not found. Installing..."
+              sudo npm install -g pm2
+            else
+              echo "PM2 is already installed"
+            fi
+
+            # Pull the latest changes and install dependencies
             git pull origin main
             npm install
+
+            # Restart the app using PM2
             pm2 restart all
