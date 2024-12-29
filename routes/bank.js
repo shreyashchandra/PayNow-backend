@@ -107,7 +107,7 @@ router.post("/create/request", authMiddleware, async (req, res) => {
   try {
     const uid = req.userId;
     console.log("uid", uid);
-    const { amount, toId } = req.body.data;
+    const { amount, toId } = req.body;
 
     const request = await Request.create({
       requsterToId: toId,
