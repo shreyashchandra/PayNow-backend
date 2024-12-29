@@ -55,7 +55,52 @@ const bankSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+const moneyRequestSchema = new mongoose.Schema(
+  {
+    requsterToId: {
+      type: mongoose.Schema.Types.ObjectId, // Reference to User model
+      ref: "User",
+      required: true,
+    },
+    requestFromIdId: {
+      type: mongoose.Schema.Types.ObjectId, // Reference to User model
+      ref: "User",
+      required: true,
+    },
+    amountRequested: {
+      type: Number,
+      required: true,
+    },
+    status: {
+      type: Number,
+      default: 0,
+    },
+  },
+  { timestamps: true }
+);
+
+const notificationSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId, // Reference to User model
+      ref: "User",
+      required: true,
+    },
+    content: {
+      type: String,
+      required: true,
+    },
+    status: {
+      type: Number,
+      default: 0,
+    },
+  },
+  { timestamps: true }
+);
+
 const Account = mongoose.model("Account", bankSchema);
 const User = mongoose.model("User", userSchema);
+const Request = mongoose.model("Request", moneyRequestSchema);
+const Notification = mongoose.model("Notification", notificationSchema);
 
-module.exports = { User, dbConnect, Account };
+module.exports = { User, dbConnect, Account, Request, Notification };

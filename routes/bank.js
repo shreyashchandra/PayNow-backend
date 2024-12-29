@@ -5,6 +5,7 @@ const mongoose = require("mongoose");
 const { authMiddleware } = require("../middleware/authMiddleware");
 const { Account } = require("../db");
 const { User } = require("../db");
+const { Request, Notification } = require("../db");
 const zod = require("zod");
 
 const transferBody = zod.object({
@@ -102,4 +103,44 @@ router.post("/transfer", authMiddleware, async (req, res) => {
   }
 });
 
+router.post("/create/request", authMiddleware, async (req, res) => {
+  try {
+    const uid = req.userId;
+    console.log("uid", uid);
+    const { amount, toId } = req.body.data;
+
+    const request = await Request.create({
+      requsterToId: toId,
+      requestFromIdId: uid,
+      amountRequested: amount,
+    });
+    res.status(200).json({ message: "Request created", data: request });
+  } catch (error) {
+    res.status(500).json({ message: "Somthing went wrong", error });
+  }
+});
+
+router.get("/request/list", authMiddleware, async (req, res) => {
+  try {
+    const uid = req.userId;
+    console.log("uid", uid);
+
+    const request = await Request.find({
+      requsterToId: uid,
+    })
+      .populate({
+        path: "requsterToId",
+        model: "User",
+        select: "firstName",
+      })
+      .populate({
+        path: "requestFromIdId",
+        model: "User",
+        select: "firstName",
+      });
+    res.status(200).json({ message: "Request created", data: request });
+  } catch (error) {
+    res.status(500).json({ message: "Somthing went wrong", error });
+  }
+});
 module.exports = router;
