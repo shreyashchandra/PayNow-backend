@@ -112,12 +112,29 @@ router.post("/signin", async (req, res) => {
 router.put("/user-update", authMiddleware, async (req, res) => {
   const { data, error } = updateBody.safeParse(req.body);
 
+  const payLoad = {};
+  if (data.firstName) {
+    payLoad.firstName = data.firstName;
+  }
+
+  if (data.lastName) {
+    payLoad.lastName = data.lastName;
+  }
+
   if (error) {
     return res.status(403).json({ msg: "Invalid credential" });
   }
 
   try {
-    await User.updateOne({ _id: req.userId }, { $set: data });
+    const userCheck = await User.findById(req.userId);
+    if (!userCheck) {
+      return res.status(403).json({ msg: "Invalid credential" });
+    }
+    if (userCheck.password !== data.password) {
+      return res.status(403).json({ msg: "Password is wrong" });
+    }
+
+    await User.updateOne({ _id: req.userId }, { $set: payLoad });
     return res.status(200).json({ msg: "Updated successfully" });
   } catch (err) {
     console.error("Error updating user:", err.message);
