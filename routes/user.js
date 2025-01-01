@@ -110,7 +110,7 @@ router.post("/signin", async (req, res) => {
 });
 
 router.put("/user-update", authMiddleware, async (req, res) => {
-  const { data, error } = updateBody.safeParse(req.body);
+  const { data, error } = updateBody.safeParse(req.body.payload);
 
   const payLoad = {};
   if (data.firstName) {
@@ -131,6 +131,12 @@ router.put("/user-update", authMiddleware, async (req, res) => {
       return res.status(403).json({ msg: "Invalid credential" });
     }
     if (userCheck.password !== data.password) {
+      console.log(
+        "userCheck.password--",
+        userCheck.password,
+        "data.password---",
+        data.password
+      );
       return res.status(403).json({ msg: "Password is wrong" });
     }
 
