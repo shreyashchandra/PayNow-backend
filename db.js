@@ -3,7 +3,7 @@ const { Schema } = require("zod");
 
 async function dbConnect() {
   try {
-    await mongoose.connect(`${process.env.MONGODB_URI}/paytm`);
+    await mongoose.connect(process.env.MONGODB_URI, { dbName: "paytm" });
     console.log("Connected to MongoDB");
   } catch (error) {
     console.log(error);
@@ -37,7 +37,7 @@ const userSchema = new mongoose.Schema(
       maxLength: 50,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 const bankSchema = new mongoose.Schema(
@@ -52,7 +52,7 @@ const bankSchema = new mongoose.Schema(
       required: true,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 const moneyRequestSchema = new mongoose.Schema(
@@ -76,7 +76,7 @@ const moneyRequestSchema = new mongoose.Schema(
       default: 0,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 const notificationSchema = new mongoose.Schema(
@@ -95,7 +95,7 @@ const notificationSchema = new mongoose.Schema(
       default: 0,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 const Account = mongoose.model("Account", bankSchema);

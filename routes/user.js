@@ -37,43 +37,48 @@ router.post("/signup", async (req, res) => {
     });
   }
 
-  const existingUser = await User.findOne({
-    username: req.body.username,
-  });
-
-  if (existingUser) {
-    return res.status(411).json({
-      msg: "User already exists",
+  try {
+    const existingUser = await User.findOne({
+      username: data.username,
     });
-  }
 
-  const user = await User.create({
-    username: data.username,
-    password: data.password,
-    firstName: data.firstName, // Corrected property name
-    lastName: data.lastName, // Corrected property name
-  });
+    if (existingUser) {
+      return res.status(411).json({
+        msg: "User already exists",
+      });
+    }
 
-  const userId = user._id;
+    const user = await User.create({
+      username: data.username,
+      password: data.password,
+      firstName: data.firstName, // Corrected property name
+      lastName: data.lastName, // Corrected property name
+    });
 
-  userBankAccount = await Account.create({
-    userId,
-    balance: Math.floor(Math.random() * (100000 - 10000 + 1)) + 10000,
-  });
+    const userId = user._id;
 
-  const token = jwt.sign(
-    {
+    await Account.create({
       userId,
-    },
-    process.env.JWT_SECRET
-  );
+      balance: Math.floor(Math.random() * (100000 - 10000 + 1)) + 10000,
+    });
 
-  return res.status(200).json({
-    msg: "User Created",
-    token: token,
-    userId: userId,
-    firstName: user.firstName,
-  });
+    const token = jwt.sign(
+      {
+        userId,
+      },
+      process.env.JWT_SECRET,
+    );
+
+    return res.status(200).json({
+      msg: "User Created",
+      token: token,
+      userId: userId,
+      firstName: user.firstName,
+    });
+  } catch (err) {
+    console.error("Signup error:", err);
+    return res.status(500).json({ msg: "Internal Server Error" });
+  }
 });
 
 router.post("/signin", async (req, res) => {
@@ -84,10 +89,16 @@ router.post("/signin", async (req, res) => {
       message: "Email already taken / Incorrect inputs",
     });
   }
-  const user = await User.findOne({
-    username: data.username,
-    password: data.password,
-  });
+  let user;
+  try {
+    user = await User.findOne({
+      username: data.username,
+      password: data.password,
+    });
+  } catch (err) {
+    console.error("Signin error:", err);
+    return res.status(500).json({ message: "Internal Server Error" });
+  }
 
   if (!user) {
     return res.status(411).json({
@@ -99,7 +110,7 @@ router.post("/signin", async (req, res) => {
     {
       userId: user._id,
     },
-    process.env.JWT_SECRET
+    process.env.JWT_SECRET,
   );
 
   return res.status(200).json({
@@ -135,7 +146,7 @@ router.put("/user-update", authMiddleware, async (req, res) => {
         "userCheck.password--",
         userCheck.password,
         "data.password---",
-        data.password
+        data.password,
       );
       return res.status(403).json({ msg: "Password is wrong" });
     }
