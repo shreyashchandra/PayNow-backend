@@ -4,7 +4,7 @@ const zod = require("zod");
 
 const { authMiddleware } = require("../middleware/authMiddleware");
 const { Account, User, Request, Transaction, REQUEST_STATUS } = require("../db");
-const { HttpError, asyncHandler, parseBody } = require("../lib/http");
+const { HttpError, asyncHandler, parseBody, escapeRegex } = require("../lib/http");
 
 const router = express.Router();
 
@@ -145,30 +145,112 @@ router.post(
   })
 );
 
+/**
+ * Transaction history.
+ *
+ * Query params (all optional):
+ *   limit      1–100, default 20
+ *   before     _id of the last row already shown (cursor for "load more")
+ *   direction  "in" | "out"
+ *   q          search the other person's first/last name
+ *   from, to   ISO dates (inclusive day range)
+ *   summary    "1" to include totals for the whole filtered set
+ */
 router.get(
   "/transactions",
   authMiddleware,
   asyncHandler(async (req, res) => {
-    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const me = new mongoose.Types.ObjectId(String(req.userId));
+    const direction = ["in", "out"].includes(req.query.direction) ? req.query.direction : null;
+    const q = String(req.query.q || "").trim().slice(0, 50);
 
-    const rows = await Transaction.find({ $or: [{ from: me }, { to: me }] })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .populate("from", "firstName lastName")
-      .populate("to", "firstName lastName");
+    if (req.query.before && !mongoose.isValidObjectId(req.query.before)) {
+      throw new HttpError(400, "Invalid cursor.");
+    }
+
+    const dateRange = {};
+    for (const [key, op] of [["from", "$gte"], ["to", "$lte"]]) {
+      if (!req.query[key]) continue;
+      const d = new Date(req.query[key]);
+      if (Number.isNaN(d.getTime())) throw new HttpError(400, `"${key}" is not a valid date.`);
+      if (key === "to") d.setUTCHours(23, 59, 59, 999);
+      dateRange[op] = d;
+    }
+
+    // Who the other side may be (when searching by name).
+    let peopleIds = null;
+    if (q) {
+      const pattern = escapeRegex(q);
+      const people = await User.find(
+        {
+          _id: { $ne: me },
+          $or: [
+            { firstName: { $regex: pattern, $options: "i" } },
+            { lastName: { $regex: pattern, $options: "i" } },
+          ],
+        },
+        { _id: 1 }
+      ).limit(500);
+      peopleIds = people.map((p) => p._id);
+    }
+
+    const outClause = peopleIds ? { from: me, to: { $in: peopleIds } } : { from: me };
+    const inClause = peopleIds ? { to: me, from: { $in: peopleIds } } : { to: me };
+    const match = {
+      $or: direction === "out" ? [outClause] : direction === "in" ? [inClause] : [outClause, inClause],
+    };
+    if (Object.keys(dateRange).length) match.createdAt = dateRange;
+
+    const pageQuery = req.query.before
+      ? { ...match, _id: { $lt: new mongoose.Types.ObjectId(String(req.query.before)) } }
+      : match;
+
+    const [rows, summary] = await Promise.all([
+      Transaction.find(pageQuery)
+        .sort({ _id: -1 })
+        .limit(limit + 1) // one extra tells us if there's another page
+        .populate("from", "firstName lastName")
+        .populate("to", "firstName lastName"),
+      req.query.summary === "1"
+        ? Transaction.aggregate([
+            { $match: match },
+            {
+              $group: {
+                _id: null,
+                count: { $sum: 1 },
+                totalIn: { $sum: { $cond: [{ $eq: ["$to", me] }, "$amount", 0] } },
+                totalOut: { $sum: { $cond: [{ $eq: ["$from", me] }, "$amount", 0] } },
+              },
+            },
+          ])
+        : null,
+    ]);
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
 
     res.json({
-      data: rows.map((t) => {
-        const outgoing = String(t.from?._id) === String(me);
+      data: page.map((t) => {
+        const outgoing = String(t.from?._id ?? t.from) === String(me);
         return {
           _id: t._id,
           direction: outgoing ? "out" : "in",
           amount: t.amount,
           note: t.note,
           createdAt: t.createdAt,
+          viaRequest: Boolean(t.requestId),
           counterparty: shortUser(outgoing ? t.to : t.from) || { firstName: "Deleted", lastName: "user" },
         };
+      }),
+      hasMore,
+      nextCursor: hasMore ? page[page.length - 1]._id : null,
+      ...(summary && {
+        summary: {
+          count: summary[0]?.count || 0,
+          totalIn: summary[0]?.totalIn || 0,
+          totalOut: summary[0]?.totalOut || 0,
+        },
       }),
     });
   })
