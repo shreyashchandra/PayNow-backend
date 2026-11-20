@@ -1,209 +1,224 @@
 const express = require("express");
-const router = express.Router();
-const { User } = require("../db");
-const { Account } = require("../db");
+const mongoose = require("mongoose");
 const zod = require("zod");
-const jwt = require("jsonwebtoken");
+const { User, Account } = require("../db");
 const { authMiddleware } = require("../middleware/authMiddleware");
+const { HttpError, asyncHandler, parseBody, escapeRegex } = require("../lib/http");
+const { hashPassword, verifyPassword, signToken } = require("../lib/auth");
+
+const router = express.Router();
+
+const name = (label) =>
+  zod
+    .string({ required_error: `${label} is required` })
+    .trim()
+    .min(1, `${label} is required`)
+    .max(50, `${label} must be 50 characters or fewer`);
 
 const signupBody = zod.object({
-  username: zod.string(),
-  firstName: zod.string(),
-  lastName: zod.string(),
-  password: zod.string(),
+  username: zod
+    .string({ required_error: "Email is required" })
+    .trim()
+    .toLowerCase()
+    .email("Enter a valid email address"),
+  firstName: name("First name"),
+  lastName: name("Last name"),
+  password: zod
+    .string({ required_error: "Password is required" })
+    .min(6, "Password must be at least 6 characters")
+    .max(128, "Password is too long"),
 });
 
 const signinBody = zod.object({
-  username: zod.string(),
-  password: zod.string(),
+  username: zod
+    .string({ required_error: "Email is required" })
+    .trim()
+    .toLowerCase()
+    .min(1, "Email is required"),
+  password: zod.string({ required_error: "Password is required" }).min(1, "Password is required"),
 });
 
-const updateBody = zod.object({
-  password: zod.string().optional(),
-  firstName: zod.string().optional(),
-  lastName: zod.string().optional(),
+const updateBody = zod
+  .object({
+    currentPassword: zod
+      .string({ required_error: "Enter your current password to save changes" })
+      .min(1, "Enter your current password to save changes"),
+    firstName: name("First name").optional(),
+    lastName: name("Last name").optional(),
+    newPassword: zod
+      .string()
+      .min(6, "New password must be at least 6 characters")
+      .max(128, "New password is too long")
+      .optional(),
+  })
+  .refine((d) => d.firstName || d.lastName || d.newPassword, {
+    message: "Change at least one field",
+    path: ["form"],
+  });
+
+const startingBalance = () => Math.floor(Math.random() * (100000 - 10000 + 1)) + 10000;
+
+const publicUser = (user) => ({
+  _id: user._id,
+  username: user.username,
+  firstName: user.firstName,
+  lastName: user.lastName,
 });
 
 router.get("/", (req, res) => {
-  res.send({ msg: "Hello from user route" });
+  res.json({ msg: "Hello from user route" });
 });
 
-router.post("/signup", async (req, res) => {
-  const { data, error } = signupBody.safeParse(req.body);
+router.post(
+  "/signup",
+  asyncHandler(async (req, res) => {
+    const data = parseBody(signupBody, req.body);
 
-  if (error) {
-    return res.status(411).json({
-      msg: "Invalid credentials",
-    });
-  }
-
-  try {
-    const existingUser = await User.findOne({
-      username: data.username,
-    });
-
+    const existingUser = await User.exists({ username: data.username });
     if (existingUser) {
-      return res.status(411).json({
-        msg: "User already exists",
+      throw new HttpError(409, "An account with this email already exists. Try signing in.", {
+        fields: { username: "An account with this email already exists" },
       });
     }
 
-    const user = await User.create({
-      username: data.username,
-      password: data.password,
-      firstName: data.firstName, // Corrected property name
-      lastName: data.lastName, // Corrected property name
+    const password = await hashPassword(data.password);
+
+    // User and wallet are created together, or not at all.
+    const session = await mongoose.startSession();
+    let user;
+    let balance;
+    try {
+      await session.withTransaction(async () => {
+        [user] = await User.create(
+          [{ username: data.username, password, firstName: data.firstName, lastName: data.lastName }],
+          { session }
+        );
+        balance = startingBalance();
+        await Account.create([{ userId: user._id, balance }], { session });
+      });
+    } catch (err) {
+      if (err.code === 11000) {
+        throw new HttpError(409, "An account with this email already exists. Try signing in.", {
+          fields: { username: "An account with this email already exists" },
+        });
+      }
+      throw err;
+    } finally {
+      await session.endSession();
+    }
+
+    return res.status(201).json({
+      msg: "User Created",
+      token: signToken(user._id),
+      userId: user._id,
+      firstName: user.firstName,
+      user: publicUser(user),
+      balance,
     });
+  })
+);
 
-    const userId = user._id;
+router.post(
+  "/signin",
+  asyncHandler(async (req, res) => {
+    const data = parseBody(signinBody, req.body);
 
-    await Account.create({
-      userId,
-      balance: Math.floor(Math.random() * (100000 - 10000 + 1)) + 10000,
-    });
+    const user = await User.findOne({ username: data.username });
+    const check = await verifyPassword(data.password, user?.password);
 
-    const token = jwt.sign(
-      {
-        userId,
-      },
-      process.env.JWT_SECRET,
-    );
+    if (!user || !check.ok) {
+      throw new HttpError(401, "That email and password don't match. Please try again.");
+    }
+
+    if (check.needsUpgrade) {
+      // Older account stored in plain text: re-save it hashed. Not fatal if this fails.
+      try {
+        user.password = await hashPassword(data.password);
+        await user.save();
+      } catch (err) {
+        console.error("[auth] could not upgrade password hash:", err.message);
+      }
+    }
 
     return res.status(200).json({
-      msg: "User Created",
-      token: token,
-      userId: userId,
+      msg: "User logedin",
+      token: signToken(user._id),
       firstName: user.firstName,
+      user: publicUser(user),
     });
-  } catch (err) {
-    console.error("Signup error:", err);
-    return res.status(500).json({ msg: "Internal Server Error" });
-  }
-});
+  })
+);
 
-router.post("/signin", async (req, res) => {
-  const { data, error } = signinBody.safeParse(req.body);
+router.get(
+  "/me",
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const user = await User.findById(req.userId);
+    if (!user) throw new HttpError(401, "This account no longer exists. Please sign in again.");
+    res.json({ user: publicUser(user) });
+  })
+);
 
-  if (error) {
-    return res.status(411).json({
-      message: "Email already taken / Incorrect inputs",
-    });
-  }
-  let user;
-  try {
-    user = await User.findOne({
-      username: data.username,
-      password: data.password,
-    });
-  } catch (err) {
-    console.error("Signin error:", err);
-    return res.status(500).json({ message: "Internal Server Error" });
-  }
+router.put(
+  "/user-update",
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    // Older clients wrapped the body in { payload }; accept both shapes.
+    const raw = req.body?.payload ?? req.body;
+    // Older clients sent the current password as `password`.
+    if (raw && raw.password && !raw.currentPassword) raw.currentPassword = raw.password;
+    const data = parseBody(updateBody, raw);
 
-  if (!user) {
-    return res.status(411).json({
-      message: "Error while logging in",
-    });
-  }
+    const user = await User.findById(req.userId);
+    if (!user) throw new HttpError(401, "This account no longer exists. Please sign in again.");
 
-  const token = jwt.sign(
-    {
-      userId: user._id,
-    },
-    process.env.JWT_SECRET,
-  );
-
-  return res.status(200).json({
-    token: token,
-    msg: "User logedin",
-    firstName: user.firstName,
-  });
-});
-
-router.put("/user-update", authMiddleware, async (req, res) => {
-  const { data, error } = updateBody.safeParse(req.body.payload);
-
-  const payLoad = {};
-  if (data.firstName) {
-    payLoad.firstName = data.firstName;
-  }
-
-  if (data.lastName) {
-    payLoad.lastName = data.lastName;
-  }
-
-  if (error) {
-    return res.status(403).json({ msg: "Invalid credential" });
-  }
-
-  try {
-    const userCheck = await User.findById(req.userId);
-    if (!userCheck) {
-      return res.status(403).json({ msg: "Invalid credential" });
-    }
-    if (userCheck.password !== data.password) {
-      console.log(
-        "userCheck.password--",
-        userCheck.password,
-        "data.password---",
-        data.password,
-      );
-      return res.status(403).json({ msg: "Password is wrong" });
+    const check = await verifyPassword(data.currentPassword, user.password);
+    if (!check.ok) {
+      throw new HttpError(403, "Current password is incorrect.", {
+        fields: { currentPassword: "Current password is incorrect" },
+      });
     }
 
-    await User.updateOne({ _id: req.userId }, { $set: payLoad });
-    return res.status(200).json({ msg: "Updated successfully" });
-  } catch (err) {
-    console.error("Error updating user:", err.message);
-    return res.status(500).json({ msg: "Internal Server Error" });
-  }
-});
+    if (data.firstName) user.firstName = data.firstName;
+    if (data.lastName) user.lastName = data.lastName;
+    if (data.newPassword) user.password = await hashPassword(data.newPassword);
+    else if (check.needsUpgrade) user.password = await hashPassword(data.currentPassword);
 
-router.get("/bulk", async (req, res) => {
-  try {
-    const filter = req.query.filter || "";
-    const page = parseInt(req.query.page, 10) || 1; // Default to page 1
-    const limit = parseInt(req.query.limit, 10) || 12; // Default to 10 items per page
+    await user.save();
+    return res.status(200).json({ msg: "Updated successfully", user: publicUser(user) });
+  })
+);
 
-    // Calculate the number of users to skip
+router.get(
+  "/bulk",
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const filter = String(req.query.filter || "").trim().slice(0, 50);
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 12));
     const skip = (page - 1) * limit;
 
-    // Fetch filtered users with pagination
-    const users = await User.find({
+    const pattern = escapeRegex(filter);
+    const query = {
+      _id: { $ne: req.userId }, // you can't pay yourself
       $or: [
-        { firstName: { $regex: filter, $options: "i" } },
-        { lastName: { $regex: filter, $options: "i" } },
+        { firstName: { $regex: pattern, $options: "i" } },
+        { lastName: { $regex: pattern, $options: "i" } },
       ],
-    })
-      .skip(skip)
-      .limit(limit);
+    };
 
-    // Get the total count of filtered users for pagination
-    const totalUsers = await User.countDocuments({
-      $or: [
-        { firstName: { $regex: filter, $options: "i" } },
-        { lastName: { $regex: filter, $options: "i" } },
-      ],
-    });
+    const [users, totalUsers] = await Promise.all([
+      User.find(query).sort({ firstName: 1, lastName: 1 }).skip(skip).limit(limit),
+      User.countDocuments(query),
+    ]);
 
-    // Calculate total pages
-    const totalPages = Math.ceil(totalUsers / limit);
-
-    // Respond with users, total pages, and current page
     res.json({
-      users: users.map((user) => ({
-        username: user.username,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        _id: user._id,
-      })),
-      totalPages,
+      users: users.map((u) => ({ _id: u._id, firstName: u.firstName, lastName: u.lastName })),
+      totalPages: Math.max(1, Math.ceil(totalUsers / limit)),
       currentPage: page,
+      total: totalUsers,
     });
-  } catch (error) {
-    console.error("Error fetching users:", error);
-    res.status(500).json({ message: "Internal server error" });
-  }
-});
+  })
+);
 
 module.exports = router;
